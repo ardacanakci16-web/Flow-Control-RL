@@ -1,0 +1,225 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{cite}
+\usepackage{microtype}
+
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\title{\textbf{\Large Robustness and Sample Efficiency of Reinforcement-Learning-Based Flow Control under Gaussian Sensor Noise}}
+
+\author{
+  \textbf{Cem \"Ozkurt}$^{1,*}$,
+  \textbf{Muhammed Emin Onay}$^{2}$,
+  \textbf{Ey\"up Altu\u{g} Tun\c{c}}$^{2}$,
+  \textbf{Ahmet Kutay K\"u\c{c}\"ukler}$^{3}$,
+  \textbf{Arda \c{C}anak\c{c}\i}$^{3}$\\[2ex]
+  \small $^{1}$Department of Data Science and Analytics, Faculty of Computer and Information Sciences,\\
+  \small Sakarya University, Sakarya, T\"urkiye\\[0.5ex]
+  \small $^{2}$Department of Computer Engineering, Faculty of Computer and Information Sciences,\\
+  \small Sakarya University, Sakarya, T\"urkiye\\[0.5ex]
+  \small $^{3}$Department of Computer Engineering, Sakarya University of Applied Sciences, Sakarya, T\"urkiye\\[0.5ex]
+  \small $^{*}$Corresponding author
+}
+
+\date{\vspace{-1ex}\small\textit{Target Journal: Physics of Fluids (AIP Publishing)}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent Reinforcement-learning (RL) platforms for active flow control typically train policies on exact, noise-free observations from the computational-fluid-dynamics (CFD) solver, an assumption that does not hold for real sensors. Using the HydroGym platform's Fluidic Pinball environment ($Re=150$), this study tests that assumption along two axes: (RQ1) how robust is a Proximal Policy Optimization (PPO) policy trained on clean observations when it is deployed zero-shot under Gaussian sensor noise, and (RQ2) does training directly under noise, at an equal sample budget, improve that robustness? A clean policy was trained for 10,000 timesteps and evaluated at six noise levels (0--100\% relative noise, $n=5$ seeds each); a second policy was trained under 10\% noise at the same budget. Results show that the clean-trained policy does not collapse under noise---mean drag coefficient significantly improves at high noise levels ($z \approx -6.6$ at 100\% noise), accompanied by reduced actuation amplitude, consistent with an implicit dither/regularization effect. In contrast, training directly under 10\% noise at the equal budget substantially underperforms clean training ($-2.2\%$ vs. $-47.0\%$ drag reduction), without the policy degenerating to a saturated controller. These findings are discussed against closely related flow-control literature and PPO's advantage-estimation theory, and suggest that, when sensor noise is expected at deployment, training on clean observations and deploying zero-shot can be both more sample-efficient and at least as robust as training under noise from scratch.
+\end{abstract}
+
+\vspace{1ex}
+\noindent \textbf{Keywords:} reinforcement learning, active flow control, sensor noise, proximal policy optimization, robustness, sample efficiency, fluidic pinball.
+
+\section{Introduction}
+
+Active flow control promises significant efficiency gains across transportation, energy, and manufacturing industries, yet the high-dimensional, nonlinear nature of fluid dynamics has long resisted conventional control approaches. In recent years, reinforcement learning (RL) has become a standard tool for this problem class: agents trained via proximal policy optimization (PPO) and related algorithms have discovered effective drag-reduction and wake-stabilization strategies on canonical benchmarks such as the circular cylinder and the fluidic pinball \cite{rabault2019, deng2020}, and have demonstrated the capability to generalize across ranges of Reynolds number without retraining \cite{tang2020}. The HydroGym platform \cite{lagemann2026} consolidates these efforts into a solver-independent benchmark suite spanning more than sixty validated environments, standardizing algorithmic comparison across the field.
+
+However, as HydroGym's own limitations discussion acknowledges, every environment in the platform supplies exact, noise-free observations drawn directly from the underlying direct numerical simulation (DNS) solver. Real sensors---such as hot-wire probes, particle image velocimetry (PIV), and pressure transducers---carry unavoidable measurement error, typically on the order of a few percent of the reading \cite{sciacchitano2019, rezaeiravesh2018}. Whether policies trained under the idealized, noise-free assumption remain effective once that assumption is violated is an open question that this study addresses directly.
+
+Specifically, this work investigates two core research questions:
+\begin{itemize}
+    \item \textbf{RQ1:} How robust is a PPO policy trained on exact sensor observations when it is deployed, without further training, into an environment with Gaussian sensor noise?
+    \item \textbf{RQ2:} Does training directly under sensor noise, at an equal sample budget, improve on that robustness?
+\end{itemize}
+Both questions are investigated on HydroGym's Fluidic Pinball environment ($Re=150$), a three-actuator, chaotic wake-control benchmark that matches the baseline configuration reported in HydroGym's own PPO/DDPG/TD3 comparison.
+
+The main contributions of this study are as follows:
+\begin{enumerate}
+    \item A native, Docker-free installation and validation of HydroGym's Firedrake backend, including the identification and documentation of a checkpoint-naming defect in the platform's source code;
+    \item A statistically grounded ($n=5$ seeds per level) zero-shot robustness evaluation across six relative noise levels from 0\% to 100\%;
+    \item An equal-sample-budget comparison between clean-observation and noisy-observation training; and
+    \item A discussion that situates both findings against the closest prior flow-control robustness studies and against PPO's advantage-estimation theory.
+\end{enumerate}
+
+The remainder of this paper is structured as follows: Section~\ref{sec:methods} describes the environment, algorithm, noise model, and experimental design; Section~\ref{sec:results} reports the results; Section~\ref{sec:discussion} discusses their physical and algorithmic implications; and Section~\ref{sec:conclusion} concludes.
+
+\section{Materials and Methods}
+\label{sec:methods}
+
+\subsection{Environment and Algorithm}
+Experiments use HydroGym's Fluidic Pinball environment at $Re=150$ (Firedrake backend, 2D, fine mesh)---three independently actuated rotating cylinders arranged in an equilateral triangle, exposing the controller to symmetry-breaking, chaotic wake dynamics. Each of the three actuators accepts a rotational speed command in $[-10, 10]$\,rad/s; the six-dimensional observation vector comprises the lift and drag coefficients $(C_L, C_D)$ of each cylinder, and the reward is the negative sum of the three drag coefficients, $r = -\sum C_D$. All training runs are warm-started from HydroGym's \cite{lagemann2026} pretrained \texttt{Pinball\_2D\_Re150\_fine\_FD} checkpoint. Policies are optimized with Proximal Policy Optimization (PPO \cite{schulman2017ppo}, Stable-Baselines3 implementation) using rollout length $n_{\text{steps}}=100$, mini-batch size 50, discount factor $\gamma=0.99$, and learning rate $3 \times 10^{-4}$. Every training run uses an equal budget of 10,000 environment timesteps and a single training seed (see Section~\ref{sec:discussion} for discussion).
+
+\subsection{Sensor Noise Model}
+Sensor noise is implemented as a Gymnasium \texttt{ObservationWrapper} that corrupts each observation component $o_i$ with Gaussian noise proportional to its own magnitude:
+\begin{equation}
+\tilde{o}_i = o_i + \mathcal{N}\left(0, (\text{level} \times |o_i|)^2\right).
+\end{equation}
+This relative-noise formulation mirrors both standard industrial sensor-accuracy practice, in which error is commonly specified as a percentage of reading, and the noise models used in the two closest prior flow-control studies \cite{paris2021, castellanos2022}. Critically, the wrapper corrupts only the observation the agent receives; the underlying CFD state---and therefore the true drag coefficient used for evaluation---is left untouched, which allows ground-truth physical performance to be measured independently of what the agent was shown.
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.75\textwidth]{figures/fig1_wrapper.png}
+\caption{GaussianSensorNoise wrapper mechanism: noise corrupts only the observation vector received by the agent policy; the true CFD state used for logging and ground-truth evaluation remains unaffected.}
+\label{fig:wrapper}
+\end{figure}
+
+\subsection{Experimental Design}
+Figure~\ref{fig:workflow} summarizes the overall experimental design. For RQ1 (zero-shot robustness), the clean-trained policy is evaluated at six relative noise levels---0\%, 5\%, 10\%, 20\%, 50\%, and 100\%---with five independent noise-seed repetitions per level and 500-step rollouts each. Five repetitions are used because the Fluidic Pinball is a chaotic dynamical system in which a single trajectory cannot separate a genuine noise effect from ordinary trajectory divergence. For RQ2 (training comparison), a second PPO policy is trained from the same checkpoint with 10\% sensor noise applied throughout training, using the identical 10,000-timestep budget, and is then evaluated in the same 10\% noisy condition it was trained under, allowing a direct, equal-budget comparison against the zero-shot result from RQ1.
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig2_workflow.png}
+\caption{Experimental workflow: two training arms initialized from the same pretrained checkpoint---clean training evaluated under zero-shot sensor noise across six levels (RQ1), and equal-budget noisy training evaluated under its native noise level (RQ2).}
+\label{fig:workflow}
+\end{figure}
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Preliminary Study: Actuator Saturation on Single-Actuator Cylinder}
+Before settling on the Fluidic Pinball, a preliminary experiment trained PPO on HydroGym's single-actuator \texttt{Cylinder\_2D\_Re100} environment for both 5,000 and 20,000 timesteps. In both cases the learned policy rapidly converged to a constant action at the lower bound of the action space ($-0.1$), independent of the observation, as illustrated in Fig.~\ref{fig:cylinder}.
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig3_cylinder.png}
+\caption{(a) Cylinder policy action trace, remaining constant across 150 evaluation steps; (b) 20,000-step learning curve demonstrating saturation into a static bang-bang controller.}
+\label{fig:cylinder}
+\end{figure}
+
+Constant maximum blowing is, in fact, a known effective steady-state strategy for single-actuator drag reduction at this Reynolds number, so the policy is not malfunctioning---it has simply discovered an open-loop control law that does not depend on the observation state at all. Since there is no timing or closed-loop feedback behavior for sensor noise to disrupt in this regime, the single-cylinder environment cannot meaningfully test either RQ1 or RQ2. This observation motivated moving to the multi-actuator, chaotic Fluidic Pinball for the remainder of this investigation.
+
+\subsection{Clean-Sensor Baseline (Fluidic Pinball)}
+On the Fluidic Pinball, 10,000 timesteps of clean-sensor PPO training reduced the mean total drag coefficient from 3.459 (first training fifth) to 1.833 (last training fifth), representing a 47.0\% reduction, as shown in Fig.~\ref{fig:pinball_clean}. Across a 150-step deterministic rollout, the resulting policy produced 144 distinct action-norm values, confirming that---unlike the single-cylinder policy---it is genuinely reactive rather than saturated, consistent with the chaotic, symmetry-breaking dynamics characteristic of this benchmark.
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig4_pinball_clean.png}
+\caption{Clean-sensor PPO training progress on the Fluidic Pinball benchmark ($Re=150$, 10,000 timesteps budget).}
+\label{fig:pinball_clean}
+\end{figure}
+
+\subsection{Zero-Shot Robustness to Sensor Noise (RQ1)}
+Table~\ref{tab:zero_shot} and Figure~\ref{fig:zero_shot} summarize the clean-trained policy's zero-shot performance across six noise levels. Notably, mean drag coefficient decreases (improves) monotonically and statistically significantly as noise increases---not the reverse---reaching $|z| > 4$ at 50\% and 100\% noise relative to the noise-free baseline condition.
+
+\begin{table}[!ht]
+\centering
+\caption{Zero-shot noise transfer performance of the clean-trained PPO policy ($n=5$ seeds/level, 500-step evaluation rollouts).}
+\label{tab:zero_shot}
+\vspace{1ex}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Relative Noise} & \textbf{Mean Total $C_D$} & \textbf{Std Dev (5 seeds)} & \textbf{$z$-score (vs. 0\%)} \\
+\midrule
+0\% (Control) & 2.526 & 0.000 & --- \\
+5\%           & 2.520 & 0.020 & -0.71 \\
+10\%          & 2.514 & 0.029 & -0.94 \\
+20\%          & 2.462 & 0.049 & -2.93 \\
+50\%          & 2.184 & 0.175 & -4.37 \\
+100\%         & 1.977 & 0.186 & -6.59 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/fig5_zero_shot.png}
+\caption{Zero-shot transfer under Gaussian sensor noise: (a) mean total drag coefficient $C_D$, (b) within-episode oscillation amplitude, and (c) actuation vigor, each plotted against relative sensor noise level.}
+\label{fig:zero_shot}
+\end{figure}
+
+Figures~\ref{fig:zero_shot}(b) and \ref{fig:zero_shot}(c) demonstrate that both the within-episode oscillation amplitude of $C_D$ and the mean actuation magnitude decrease steadily as noise increases, rather than growing as an instability account would predict. Taken together with the improving mean drag in Fig.~\ref{fig:zero_shot}(a), this three-way pattern---lower drag, lower oscillation, lower actuation---indicates that random sensor noise effectively damps an over-active policy rather than destabilizing it.
+
+\subsection{Equal-Budget Comparison of Clean and Noisy Training (RQ2)}
+A second policy, trained from the same checkpoint under 10\% sensor noise for the identical 10,000-timestep budget, reduced mean total $C_D$ by only 2.2\% (from 3.454 to 3.379), compared to the clean-trained policy's 47.0\% reduction over the identical budget. As shown in Fig.~\ref{fig:equal_budget}, its learning curve remains nearly flat throughout the entire training process.
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig6_equal_budget.png}
+\caption{Equal-budget (10,000-timestep) learning curves: clean-observation training converges rapidly, whereas noisy training exhibits an almost flat learning curve.}
+\label{fig:equal_budget}
+\end{figure}
+
+A saturation audit on the noisy-trained policy---analogous to the one conducted for the cylinder pilot study---confirmed that the controller did not collapse into a trivial static mode: over 200 evaluation steps it produced 158 distinct action-norm values with a higher mean magnitude (6.94) than the clean-trained policy, verifying that learning was occurring, but at an extensively slower rate under continuous observation corruption.
+
+\begin{table}[!ht]
+\centering
+\caption{Comparison of performance across the three primary deployment scenarios.}
+\label{tab:scenarios}
+\vspace{1ex}
+\begin{tabular}{lc}
+\toprule
+\textbf{Deployment Scenario} & \textbf{Mean Total $C_D$} \\
+\midrule
+Clean-trained $\rightarrow$ Clean test (control) & 2.526 \\
+Clean-trained $\rightarrow$ 10\% noise (zero-shot transfer) & 2.514 \\
+Noisy-trained (10\%) $\rightarrow$ 10\% noise (native condition) & 3.380 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.75\textwidth]{figures/fig7_comparison.png}
+\caption{Summary performance comparison across the three deployment scenarios (lower mean drag coefficient indicates superior control performance).}
+\label{fig:comparison}
+\end{figure}
+
+As Table~\ref{tab:scenarios} and Fig.~\ref{fig:comparison} highlight, the noisy-trained policy evaluated in its native condition (10\% noise) substantially underperforms the clean-trained policy deployed zero-shot into the identical 10\% noisy condition (3.380 vs. 2.514). At equal interaction budgets, training under noise from scratch is not merely slower than clean training---it fails to match what clean training delivers without ever encountering noise during optimization.
+
+\section{Discussion}
+\label{sec:discussion}
+
+The two results reported in Section~\ref{sec:results} point in distinct directions and call for separate physical and algorithmic interpretations. For RQ1, the observed robustness---and mild improvement---under random Gaussian noise is consistent with the two prior flow-control studies that adopted an equivalent relative-noise formulation on cylinder-wake control: Paris, Beneddine, and Dandois \cite{paris2021} and Castellanos et al. \cite{castellanos2022}, both of which observed that deep reinforcement learning controllers remain resilient under substantial sensor noise. The contribution of this study relative to that prior work is therefore not merely the qualitative robustness finding itself, but (i) extending it to 100\% relative noise with multi-seed statistical support, and (ii) documenting that the improvement in mean drag co-occurs with reduced oscillation amplitude and reduced actuation vigor. This pattern is consistent with random noise acting as an implicit dither or regularizer on an actuation-heavy policy, a phenomenon well-established in classical stochastic-resonance and noise-as-regularization theory \cite{wannamaker2000, bishop1995} but not previously documented in this combination for flow-control RL.
+
+This robustness finding must be qualified: it concerns random, non-adversarial noise. Zhang et al. \cite{zhang2020} demonstrated that standard-trained DRL policies, including PPO, can collapse under adversarial observation perturbations of comparable magnitude. Robustness to random sensor noise and robustness to adversarial perturbations represent distinct properties, and the findings here apply strictly to the former.
+
+For RQ2, the equal-budget shortfall of noisy training is directly explainable by the mathematical construction of PPO's advantage estimator. Generalized Advantage Estimation (GAE \cite{schulman2016gae}) reduces policy gradient variance via a learned value-function baseline, whose accuracy fundamentally relies on receiving accurate state observations; Greensmith et al. \cite{greensmith2004} proved that increased estimator variance directly inflates the sample complexity required for convergence. Corrupting the observation channel throughout optimization degrades this baseline continuously, explaining the nearly flat learning curve observed in Fig.~\ref{fig:equal_budget} within a sample budget that is more than sufficient for clean training.
+
+Practically, these findings provide a clear guideline for active flow control applications: training on clean, idealized simulation environments and deploying the resulting policy zero-shot can be both substantially more sample-efficient and at least as robust as training under noise from scratch. Several limitations should be acknowledged: a single training seed was evaluated per condition; the 10,000-timestep budget is below full asymptotic convergence; the 500-step zero-shot evaluation horizon leaves ultra-long-term cumulative effects unaddressed; only a single, purely multiplicative Gaussian noise family was tested; and experiments were conducted on a 2D Fluidic Pinball at $Re=150$.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+This study evaluated whether deep reinforcement learning policies for active flow control, trained on idealized noise-free observations, remain effective when deployed under sensor imperfections. On the chaotic Fluidic Pinball benchmark, a clean-trained PPO policy proved remarkably robust to zero-shot Gaussian sensor noise up to 100\%, with drag performance improving as actuation vigor was moderated by noise dithering. In contrast, training directly under sensor noise from scratch severely hindered sample efficiency under equal interaction budgets. These findings demonstrate that clean-simulation training followed by zero-shot deployment is an advantageous default strategy for flow control systems subject to measurement noise.
+
+\section*{Acknowledgments}
+The authors gratefully acknowledge the developers of the HydroGym open-source platform, on which all computational fluid dynamics simulations in this study were conducted.
+
+\section*{Author Contributions}
+\textbf{Cem \"Ozkurt:} Conceptualization, Methodology, Software, Investigation, Writing -- original draft. \textbf{Muhammed Emin Onay:} Software, Investigation, Validation. \textbf{Ey\"up Altu\u{g} Tun\c{c}:} Investigation, Data curation, Validation. \textbf{Ahmet Kutay K\"u\c{c}\"ukler:} Software, Investigation, Validation. \textbf{Arda \c{C}anak\c{c}\i:} Conceptualization, Methodology, Software, Supervision, Writing -- review \& editing.
+
+\section*{Conflict of Interest}
+The authors declare that they have no known competing financial interests or personal relationships that could have appeared to influence the work reported in this paper.
+
+\section*{Data Availability}
+The simulation environments, evaluation scripts, and trained model checkpoints are available upon reasonable request.
+
+\bibliographystyle{unsrt}
+\bibliography{references}
+
+\end{document}
